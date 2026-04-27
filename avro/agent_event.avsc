@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "AgentEvent",
+  "namespace": "agents.v1",
+  "doc": "One event emitted by an agent. Wire-compatible with Kafka pipelines using a Schema Registry; small enough for direct Avro/HTTP exchange.",
+  "fields": [
+    {"name": "id",      "type": "string"},
+    {"name": "agent_id","type": "string"},
+    {"name": "type",    "type": "string"},
+    {"name": "time_ms", "type": "long",  "doc": "epoch milliseconds"},
+    {"name": "payload", "type": ["null", "string"], "default": null}
+  ]
+}

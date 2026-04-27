@@ -1,0 +1,34 @@
+// agents.proto — example gRPC contract for an agent event stream.
+// Regenerate Go code with: make proto
+syntax = "proto3";
+
+package agents.v1;
+option go_package = "github.com/eneko/sugaar/internal/pb/agents/v1;agentsv1";
+
+import "google/protobuf/timestamp.proto";
+
+service Agents {
+  // Stream events for a single agent. The client may keep the stream open
+  // and reconnect; the server replays the most recent N events.
+  rpc Subscribe(SubscribeRequest) returns (stream Event) {}
+
+  // Publish a single event into the hub.
+  rpc Publish(PublishRequest) returns (PublishResponse) {}
+}
+
+message SubscribeRequest {
+  string agent_id = 1;
+  // last_seen_id is optional; clients pass it on reconnect for de-duplication.
+  string last_seen_id = 2;
+}
+
+message Event {
+  string id = 1;
+  string topic = 2;
+  string type = 3;
+  google.protobuf.Timestamp time = 4;
+  bytes payload = 5; // opaque application bytes (could be Avro, JSON, etc.)
+}
+
+message PublishRequest { Event event = 1; }
+message PublishResponse { int32 subscribers = 1; }

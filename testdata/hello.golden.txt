@@ -1,0 +1,6 @@
+< 200 OK
+< Content-Type: application/json; charset=utf-8
+---
+{
+  "hello": "eneko"
+}
