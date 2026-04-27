@@ -46,7 +46,7 @@ func TestHubDropsSlowSubscribers(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		h.Publish(Event{Topic: "t", Type: "x"})
 	}
-	if h.DropCount == 0 {
+	if h.DropCount() == 0 {
 		t.Fatal("expected drops on slow subscriber")
 	}
 }

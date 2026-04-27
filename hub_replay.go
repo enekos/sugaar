@@ -31,6 +31,10 @@ func (b *replayBuffer) push(ev Event) {
 func (b *replayBuffer) snapshot() []Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.snapshotLocked()
+}
+
+func (b *replayBuffer) snapshotLocked() []Event {
 	if !b.full {
 		out := make([]Event, b.head)
 		copy(out, b.ring[:b.head])
@@ -40,6 +44,24 @@ func (b *replayBuffer) snapshot() []Event {
 	copy(out, b.ring[b.head:])
 	copy(out[b.size-b.head:], b.ring[:b.head])
 	return out
+}
+
+// since returns buffered events whose IDs come strictly after lastID, in
+// chronological order. If lastID is empty or not found, the full snapshot
+// is returned (the caller's "first connect" behaviour).
+func (b *replayBuffer) since(lastID string) []Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	all := b.snapshotLocked()
+	if lastID == "" {
+		return all
+	}
+	for i, ev := range all {
+		if ev.ID == lastID {
+			return all[i+1:]
+		}
+	}
+	return all
 }
 
 // EnableReplay turns on a per-topic ring buffer of the most recent size
@@ -64,4 +86,17 @@ func (h *Hub) Replay(topic string) []Event {
 		return nil
 	}
 	return rb.snapshot()
+}
+
+// ReplaySince returns buffered events for topic whose IDs come strictly
+// after lastID. Useful when implementing custom resume logic; SSE handlers
+// already use this internally via SubscribeSince.
+func (h *Hub) ReplaySince(topic, lastID string) []Event {
+	h.mu.RLock()
+	rb := h.replays[topic]
+	h.mu.RUnlock()
+	if rb == nil {
+		return nil
+	}
+	return rb.since(lastID)
 }

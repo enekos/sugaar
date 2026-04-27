@@ -270,6 +270,10 @@ func (s *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, http.ErrNotSupported
 }
 
+// Unwrap exposes the wrapped writer so http.NewResponseController can
+// reach SetWriteDeadline / SetReadDeadline on the real connection.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // Run starts the server(s) and blocks until ctx (or SIGINT/SIGTERM) cancels.
 // When EnableGRPC has been called, the gRPC server runs alongside HTTP and
 // shares the lifecycle.

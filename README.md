@@ -62,7 +62,10 @@ func main() {
 - **WebSocket.** `app.StreamTopic` upgrades and forwards Hub events; pings,
   pongs, and read deadlines wired.
 - **SSE.** `app.SSETopic` does the same over `text/event-stream` for
-  `EventSource` and `curl -N`.
+  `EventSource` and `curl -N`. `app.SSETopicWith(fn, sugaar.SSEOptions{...})`
+  adds heartbeats, a client `retry:` hint, write deadlines, and
+  `Last-Event-ID` resume against the Hub replay buffer. See
+  `examples/sse-resilient`.
 - **Static files.** `app.Static("/assets", "./public")` or `StaticFS` over
   `embed.FS`.
 - **Bind helpers.** `BindJSON`, `BindQuery`, `BindForm` with struct tags.
