@@ -1,6 +1,7 @@
 package sugaar
 
 import (
+	"context"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -208,7 +209,7 @@ func (h *Hub) Publish(ev Event) int {
 			delivered++
 		} else {
 			h.dropCount.Add(1)
-			h.log.Warn("sugaar: event dropped (slow subscriber)", "topic", ev.Topic)
+			h.log.LogAttrs(context.Background(), slog.LevelWarn, "sugaar: event dropped (slow subscriber)", slog.String("topic", ev.Topic))
 		}
 	}
 	return delivered
