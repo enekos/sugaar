@@ -53,15 +53,16 @@ func (a *App) pprofGate() func(http.HandlerFunc) http.Handler {
 // can flow through Auth middleware that expects a *Context.
 func (a *App) adapt(h HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, _ := r.Context().Value(ctxKey{}).(*Context)
-		if c == nil {
+		var c *Context
+		if v, ok := reqCtxMap.Load(r); ok {
+			c = v.(*Context)
+			c.w = w
+			c.r = r
+		} else {
 			c = contextPool.Get().(*Context)
 			c.app = a
 			c.reset(w, r)
 			defer func() { c.app = nil; c.reset(nil, nil); contextPool.Put(c) }()
-		} else {
-			c.w = w
-			c.r = r
 		}
 		if err := h(c); err != nil {
 			a.opts.ErrorHandler(c, err)

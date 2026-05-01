@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -166,8 +167,12 @@ func (a *App) rebuildChain() {
 // for matched routes.
 func (a *App) Handle(pattern string, h HandlerFunc) {
 	a.Mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-		c, _ := r.Context().Value(ctxKey{}).(*Context)
-		if c == nil {
+		var c *Context
+		if v, ok := reqCtxMap.Load(r); ok {
+			c = v.(*Context)
+			c.w = w
+			c.r = r
+		} else {
 			// Direct mux invocation (e.g. tests bypassing ServeHTTP).
 			c = contextPool.Get().(*Context)
 			c.app = a
@@ -177,10 +182,6 @@ func (a *App) Handle(pattern string, h HandlerFunc) {
 				c.reset(nil, nil)
 				contextPool.Put(c)
 			}()
-		} else {
-			// Use the already-wrapped writer from app middleware.
-			c.w = w
-			c.r = r
 		}
 		if err := h(c); err != nil {
 			a.opts.ErrorHandler(c, err)
@@ -188,9 +189,9 @@ func (a *App) Handle(pattern string, h HandlerFunc) {
 	})
 }
 
-// ctxKey identifies the *Context smuggled through r.Context() so route
-// handlers reuse the one app middleware already prepared.
-type ctxKey struct{}
+// reqCtxMap maps *http.Request to *Context for the duration of a request,
+// avoiding the two allocations from Request.WithContext + context.WithValue.
+var reqCtxMap sync.Map
 
 // GET / POST / PUT / DELETE / PATCH / HEAD / OPTIONS register a method-bound route.
 func (a *App) GET(path string, h HandlerFunc)     { a.Handle("GET "+path, h) }
@@ -208,9 +209,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := contextPool.Get().(*Context)
 	c.app = a
 	c.reset(w, r)
-	r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
-	c.r = r
+	reqCtxMap.Store(r, c)
 	defer func() {
+		reqCtxMap.Delete(r)
 		c.app = nil
 		c.reset(nil, nil)
 		contextPool.Put(c)
