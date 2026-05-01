@@ -32,21 +32,38 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 // Options configures an App. The zero value runs an HTTP server on :8080
-// with pprof enabled.
+// with pprof enabled and production-safe timeouts.
 type Options struct {
-	Addr             string         // plain HTTP listen addr; default ":8080"
-	TLSAddr          string         // HTTPS listen addr; default ":8443" or ":443" with autocert
-	AutoCertDomains  []string       // when set, enables Let's Encrypt
-	AutoCertCacheDir string         // default "./certs"
+	Addr              string        // plain HTTP listen addr; default ":8080"
+	TLSAddr           string        // HTTPS listen addr; default ":8443" or ":443" with autocert
+	AutoCertDomains   []string      // when set, enables Let's Encrypt
+	AutoCertCacheDir  string        // default "./certs"
 	CertFile, KeyFile string        // static cert/key (alternative to autocert)
-	DisablePprof     bool           // pprof is mounted by default
-	Logger           *slog.Logger   // default slog.Default()
-	ShutdownTimeout  time.Duration  // default 15s
-	ErrorHandler     ErrorHandler   // override default error response
+	DisablePprof      bool          // pprof is mounted by default
+	DisableHealth     bool          // /healthz is mounted by default
+	PprofAuth         Authenticator // optional gate for /debug/pprof; nil = localhost-only
+	Logger            *slog.Logger  // default slog.Default()
+	ShutdownTimeout   time.Duration // default 15s
+	ErrorHandler      ErrorHandler  // override default error response
+
+	// MaxBodyBytes caps the size of request bodies (BindJSON, BindForm, raw
+	// reads). Zero applies the default 1 MiB; set to a negative value to
+	// disable. Hard cap is enforced via http.MaxBytesReader, returning 413.
+	MaxBodyBytes int64
+
+	// HTTP server timeouts. Zero applies sane production defaults; set to a
+	// negative value to disable. WriteTimeout is intentionally NOT exposed:
+	// streaming endpoints (SSE/WS) need long-lived connections, so per-write
+	// deadlines are managed by handlers via http.ResponseController.
+	ReadHeaderTimeout time.Duration // default 10s; mitigates slowloris
+	ReadTimeout       time.Duration // default 60s; full body read budget
+	IdleTimeout       time.Duration // default 120s; keep-alive idle cutoff
+	MaxHeaderBytes    int           // default 1 MiB
 }
 
 // ErrorHandler converts a HandlerFunc error into an HTTP response. The
@@ -76,6 +93,21 @@ func (o *Options) defaults() {
 	if o.ErrorHandler == nil {
 		o.ErrorHandler = defaultErrorHandler
 	}
+	if o.MaxBodyBytes == 0 {
+		o.MaxBodyBytes = 1 << 20 // 1 MiB
+	}
+	if o.ReadHeaderTimeout == 0 {
+		o.ReadHeaderTimeout = 10 * time.Second
+	}
+	if o.ReadTimeout == 0 {
+		o.ReadTimeout = 60 * time.Second
+	}
+	if o.IdleTimeout == 0 {
+		o.IdleTimeout = 120 * time.Second
+	}
+	if o.MaxHeaderBytes == 0 {
+		o.MaxHeaderBytes = 1 << 20
+	}
 }
 
 // App is a sugaar application. Safe for concurrent use after New returns.
@@ -104,6 +136,9 @@ func New(opts Options) *App {
 	a.Use(recoverMiddleware(a.log), requestLogMiddleware(a.log))
 	if !opts.DisablePprof {
 		a.mountPprof()
+	}
+	if !opts.DisableHealth {
+		a.mountHealth()
 	}
 	return a
 }
@@ -316,37 +351,66 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) runPlain(ctx context.Context) error {
-	srv := &http.Server{Addr: a.opts.Addr, Handler: a}
+	srv := a.newServer(a.opts.Addr)
 	a.log.Info("sugaar: serving HTTP", "addr", a.opts.Addr)
 	return serveAndShutdown(ctx, a.opts.ShutdownTimeout, srv, srv.ListenAndServe)
 }
 
 func (a *App) runStaticTLS(ctx context.Context) error {
-	srv := &http.Server{Addr: a.opts.TLSAddr, Handler: a}
+	srv := a.newServer(a.opts.TLSAddr)
 	a.log.Info("sugaar: serving HTTPS", "addr", a.opts.TLSAddr)
 	return serveAndShutdown(ctx, a.opts.ShutdownTimeout, srv, func() error {
 		return srv.ListenAndServeTLS(a.opts.CertFile, a.opts.KeyFile)
 	})
 }
 
+// newServer constructs an http.Server with sugaar's hardened defaults
+// (timeouts, header cap, error logger). WriteTimeout is intentionally left
+// at zero: SSE/WebSocket handlers are long-lived and manage their own
+// per-write deadlines via http.ResponseController.
+func (a *App) newServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           a,
+		ReadHeaderTimeout: nonNeg(a.opts.ReadHeaderTimeout),
+		ReadTimeout:       nonNeg(a.opts.ReadTimeout),
+		IdleTimeout:       nonNeg(a.opts.IdleTimeout),
+		MaxHeaderBytes:    a.opts.MaxHeaderBytes,
+		ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelError),
+	}
+}
+
+// nonNeg returns 0 when d is negative, so callers can disable a timeout by
+// setting it to a sentinel negative value while zero still means "default".
+func nonNeg(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 func (a *App) runAutoCert(ctx context.Context) error {
 	if err := os.MkdirAll(a.opts.AutoCertCacheDir, 0o700); err != nil {
 		return fmt.Errorf("autocert cache: %w", err)
+	}
+	// Tighten perms even if the dir already existed with looser bits;
+	// the cache holds private keys.
+	if err := os.Chmod(a.opts.AutoCertCacheDir, 0o700); err != nil {
+		return fmt.Errorf("autocert cache chmod: %w", err)
 	}
 	m := &autocert.Manager{
 		Cache:      autocert.DirCache(a.opts.AutoCertCacheDir),
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(a.opts.AutoCertDomains...),
 	}
-	httpsSrv := &http.Server{
-		Addr:      a.opts.TLSAddr,
-		Handler:   a,
-		TLSConfig: &tls.Config{GetCertificate: m.GetCertificate, MinVersion: tls.VersionTLS12},
+	httpsSrv := a.newServer(a.opts.TLSAddr)
+	httpsSrv.TLSConfig = &tls.Config{
+		GetCertificate: m.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
 	}
-	httpSrv := &http.Server{
-		Addr:    a.opts.Addr,
-		Handler: m.HTTPHandler(http.HandlerFunc(redirectHTTPS)),
-	}
+	httpSrv := a.newServer(a.opts.Addr)
+	httpSrv.Handler = m.HTTPHandler(http.HandlerFunc(redirectHTTPS))
 	a.log.Info("sugaar: autocert HTTPS", "addr", a.opts.TLSAddr, "domains", a.opts.AutoCertDomains)
 
 	errCh := make(chan error, 2)

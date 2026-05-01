@@ -47,9 +47,9 @@ func (c *Context) RequestID() string {
 // CORSOptions configures the CORS middleware. Zero values fall back to
 // permissive defaults suitable for local dev.
 type CORSOptions struct {
-	AllowOrigins     []string      // exact origins; "*" allowed for dev
-	AllowMethods     []string      // default GET,POST,PUT,PATCH,DELETE,OPTIONS
-	AllowHeaders     []string      // default Content-Type, Authorization
+	AllowOrigins     []string // exact origins; "*" allowed for dev
+	AllowMethods     []string // default GET,POST,PUT,PATCH,DELETE,OPTIONS
+	AllowHeaders     []string // default Content-Type, Authorization
 	AllowCredentials bool
 	MaxAge           time.Duration // default 5 minutes
 }
@@ -159,13 +159,18 @@ func Timeout(d time.Duration) Middleware {
 func BasicAuth(user, pass string) Middleware {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			u, p, ok := c.R().BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 ||
-				subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
-				c.W().Header().Set("WWW-Authenticate", `Basic realm="sugaar"`)
+			a := BasicAuthAuthenticator(func(u, p string) (*Identity, error) {
+				if subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 ||
+					subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
+					return nil, errors.New("invalid credentials")
+				}
+				return &Identity{Subject: u, Name: u}, nil
+			})
+			id, err := a.Authenticate(c)
+			if err != nil {
 				return Unauthorized("")
 			}
-			c.Set("user", u)
+			c.Set("user", id.Subject)
 			return next(c)
 		}
 	}
@@ -174,22 +179,11 @@ func BasicAuth(user, pass string) Middleware {
 // BearerAuth requires "Authorization: Bearer <token>" matching one of the
 // supplied tokens (constant-time compared).
 func BearerAuth(tokens ...string) Middleware {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			h := c.Header("Authorization")
-			const prefix = "Bearer "
-			if !strings.HasPrefix(h, prefix) {
-				return Unauthorized("missing bearer token")
-			}
-			got := []byte(h[len(prefix):])
-			for _, t := range tokens {
-				if subtle.ConstantTimeCompare(got, []byte(t)) == 1 {
-					return next(c)
-				}
-			}
-			return Unauthorized("invalid bearer token")
-		}
+	m := make(map[string]*Identity, len(tokens))
+	for _, t := range tokens {
+		m[t] = &Identity{}
 	}
+	return Auth(StaticBearerAuth(m))
 }
 
 // GZip compresses responses with gzip when the client accepts it. Skips

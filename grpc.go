@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -92,12 +93,16 @@ func (a *App) AutocertTLSConfig(domains ...string) *tls.Config {
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(domains...),
 	}
-	return &tls.Config{GetCertificate: m.GetCertificate, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2"}}
+	return &tls.Config{
+		GetCertificate: m.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
+	}
 }
 
-// httpHealth registers a minimal /healthz endpoint useful for load balancers.
-// gRPC users typically prefer the standard health protocol; we keep this
-// HTTP-only helper for parity.
-func (a *App) httpHealth() {
+// mountHealth registers a minimal /healthz endpoint useful for load
+// balancers and Docker HEALTHCHECK. Mounted by default in New(); disable
+// via Options.DisableHealth.
+func (a *App) mountHealth() {
 	a.GET("/healthz", func(c *Context) error { return c.String(http.StatusOK, "ok") })
 }

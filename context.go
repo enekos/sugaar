@@ -82,19 +82,35 @@ func (c *Context) Get(key string) (any, bool) {
 	return v, ok
 }
 
-// BindJSON decodes the request body as JSON into dst. The body is closed.
-// Returns an error suitable for returning from a HandlerFunc.
+// BindJSON decodes the request body as JSON into dst. The body is capped by
+// Options.MaxBodyBytes (default 1 MiB) and closed when the call returns.
+// On overflow it returns 413 Payload Too Large; on malformed JSON, 400.
 func (c *Context) BindJSON(dst any) error {
 	if c.r.Body == nil {
-		return errors.New("empty body")
+		return BadRequest("empty body")
 	}
-	defer c.r.Body.Close()
-	dec := json.NewDecoder(c.r.Body)
+	body := c.limitedBody()
+	defer body.Close()
+	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil && !errors.Is(err, io.EOF) {
-		return err
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return httpErr(http.StatusRequestEntityTooLarge, "request body exceeds limit")
+		}
+		return BadRequest(err.Error()).WithCause(err)
 	}
 	return nil
+}
+
+// limitedBody wraps r.Body in http.MaxBytesReader using the App's configured
+// body size cap. A negative cap disables the limit; a nil app falls back to
+// the original body so tests bypassing New still work.
+func (c *Context) limitedBody() io.ReadCloser {
+	if c.app == nil || c.app.opts.MaxBodyBytes < 0 {
+		return c.r.Body
+	}
+	return http.MaxBytesReader(c.w, c.r.Body, c.app.opts.MaxBodyBytes)
 }
 
 // JSON writes status and a JSON-encoded body. The Content-Type is set

@@ -175,37 +175,61 @@ func (h *Hub) Publish(ev Event) int {
 		ev.ID = strconv.FormatUint(h.idSeq.Add(1), 10)
 	}
 
-	h.mu.RLock()
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return 0
+	}
 	set := h.subs[ev.Topic]
 	subs := make([]*Subscription, 0, len(set))
 	for s := range set {
 		subs = append(subs, s)
 	}
-	h.mu.RUnlock()
-
+	var rb *replayBuffer
 	if h.replaySize > 0 {
-		h.mu.Lock()
-		rb := h.replays[ev.Topic]
+		rb = h.replays[ev.Topic]
 		if rb == nil {
 			rb = newReplayBuffer(h.replaySize)
+			if h.replays == nil {
+				h.replays = make(map[string]*replayBuffer)
+			}
 			h.replays[ev.Topic] = rb
 		}
-		h.mu.Unlock()
+	}
+	h.mu.Unlock()
+
+	if rb != nil {
 		rb.push(ev)
 	}
 
 	delivered := 0
 	for _, s := range subs {
-		select {
-		case s.ch <- ev:
+		if s.send(ev) {
 			delivered++
-		default:
-			s.Drops.Add(1)
+		} else {
 			h.dropCount.Add(1)
 			h.log.Warn("sugaar: event dropped (slow subscriber)", "topic", ev.Topic)
 		}
 	}
 	return delivered
+}
+
+// send delivers ev to the subscriber without blocking, returning true on
+// success. Holding sub.mu serialises against unsubscribe/close so Hub.Close
+// cannot panic Publish with a send-on-closed-channel.
+func (s *Subscription) send(ev Event) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	select {
+	case s.ch <- ev:
+		return true
+	default:
+		s.Drops.Add(1)
+		return false
+	}
 }
 
 // SubscriberCount returns the number of subscribers for topic.
@@ -227,12 +251,18 @@ func (h *Hub) Topics() []string {
 	return out
 }
 
-// Close terminates all subscriptions. Subsequent Subscribe returns a closed sub.
+// Close terminates all subscriptions. Subsequent Subscribe returns a closed
+// sub, and concurrent Publish drops events instead of panicking.
 func (h *Hub) Close() {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
 	h.closed = true
 	all := h.subs
 	h.subs = make(map[string]map[*Subscription]struct{})
+	h.replays = nil
 	h.mu.Unlock()
 
 	for _, set := range all {
