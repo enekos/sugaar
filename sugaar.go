@@ -240,12 +240,12 @@ func requestLogMiddleware(log *slog.Logger) Middleware {
 			sw.bytes = 0
 			c.w = sw
 			err := next(c)
-			log.Info("http",
-				"method", c.r.Method,
-				"path", c.r.URL.Path,
-				"status", sw.status,
-				"bytes", sw.bytes,
-				"dur", time.Since(start),
+			log.LogAttrs(context.Background(), slog.LevelInfo, "http",
+				slog.String("method", c.r.Method),
+				slog.String("path", c.r.URL.Path),
+				slog.Int("status", sw.status),
+				slog.Int("bytes", sw.bytes),
+				slog.Duration("dur", time.Since(start)),
 			)
 			return err
 		}
