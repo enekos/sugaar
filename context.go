@@ -2,12 +2,14 @@ package sugaar
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"sync"
+	"unsafe"
 )
 
 // HandlerFunc is sugaar's handler signature. Returning a non-nil error lets
@@ -25,6 +27,7 @@ type Context struct {
 	r   *http.Request
 	app *App
 	sw  statusWriter // embedded for reuse by requestLogMiddleware
+	reqID string
 
 	// store is a tiny per-request map; nil until first Set.
 	store map[string]any
@@ -36,6 +39,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.r = r
 	c.store = nil
 	c.sw = statusWriter{}
+	c.reqID = ""
 }
 
 // W returns the underlying ResponseWriter.
@@ -140,6 +144,17 @@ func (c *Context) String(status int, s string) error {
 func (c *Context) Status(code int) error {
 	c.w.WriteHeader(code)
 	return nil
+}
+
+// RequestID returns the request's ID if RequestID middleware is installed.
+func (c *Context) RequestID() string { return c.reqID }
+
+// hexEncodeString encodes src as hex into a reused byte slice and returns a
+// string without allocating the intermediate byte slice on the heap.
+func hexEncodeString(src []byte) string {
+	dst := make([]byte, hex.EncodedLen(len(src)))
+	hex.Encode(dst, src)
+	return unsafe.String(&dst[0], len(dst))
 }
 
 // contextPool keeps Context allocations off the hot path.

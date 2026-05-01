@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -14,9 +13,6 @@ import (
 	"sync"
 	"time"
 )
-
-// requestIDKey is the Context.Set key for the request ID.
-const requestIDKey = "sugaar.request_id"
 
 // RequestID assigns a unique ID per request and exposes it on the response
 // header (X-Request-Id) and via Context.RequestID. Honors an inbound
@@ -28,20 +24,13 @@ func RequestID() Middleware {
 			if id == "" {
 				var b [12]byte
 				_, _ = rand.Read(b[:])
-				id = hex.EncodeToString(b[:])
+				id = hexEncodeString(b[:])
 			}
 			c.W().Header().Set("X-Request-Id", id)
-			c.Set(requestIDKey, id)
+			c.reqID = id
 			return next(c)
 		}
 	}
-}
-
-// RequestID returns the request's ID if RequestID middleware is installed.
-func (c *Context) RequestID() string {
-	v, _ := c.Get(requestIDKey)
-	s, _ := v.(string)
-	return s
 }
 
 // CORSOptions configures the CORS middleware. Zero values fall back to
