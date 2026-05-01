@@ -119,10 +119,15 @@ func (c *Context) limitedBody() io.ReadCloser {
 	return http.MaxBytesReader(c.w, c.r.Body, c.app.opts.MaxBodyBytes)
 }
 
+var (
+	jsonContentType = []string{"application/json; charset=utf-8"}
+	textContentType = []string{"text/plain; charset=utf-8"}
+)
+
 // JSON writes status and a JSON-encoded body. The Content-Type is set
 // automatically.
 func (c *Context) JSON(status int, body any) error {
-	c.w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.w.Header()["Content-Type"] = jsonContentType
 	c.w.WriteHeader(status)
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -134,7 +139,7 @@ func (c *Context) JSON(status int, body any) error {
 
 // String writes a plain-text response.
 func (c *Context) String(status int, s string) error {
-	c.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	c.w.Header()["Content-Type"] = textContentType
 	c.w.WriteHeader(status)
 	_, err := c.w.Write(strBytes(s))
 	return err
