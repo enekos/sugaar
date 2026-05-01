@@ -136,7 +136,7 @@ func (c *Context) JSON(status int, body any) error {
 func (c *Context) String(status int, s string) error {
 	c.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	c.w.WriteHeader(status)
-	_, err := io.WriteString(c.w, s)
+	_, err := c.w.Write(strBytes(s))
 	return err
 }
 
@@ -155,6 +155,12 @@ func hexEncodeString(src []byte) string {
 	dst := make([]byte, hex.EncodedLen(len(src)))
 	hex.Encode(dst, src)
 	return unsafe.String(&dst[0], len(dst))
+}
+
+// strBytes returns a byte slice backed by s without copying.
+// The caller must not modify the returned slice.
+func strBytes(s string) []byte {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 // contextPool keeps Context allocations off the hot path.
