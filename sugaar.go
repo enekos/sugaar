@@ -234,7 +234,10 @@ func requestLogMiddleware(log *slog.Logger) Middleware {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			start := time.Now()
-			sw := &statusWriter{ResponseWriter: c.w}
+			sw := &c.sw
+			sw.ResponseWriter = c.w
+			sw.status = 0
+			sw.bytes = 0
 			c.w = sw
 			err := next(c)
 			log.Info("http",

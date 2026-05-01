@@ -24,6 +24,7 @@ type Context struct {
 	w   http.ResponseWriter
 	r   *http.Request
 	app *App
+	sw  statusWriter // embedded for reuse by requestLogMiddleware
 
 	// store is a tiny per-request map; nil until first Set.
 	store map[string]any
@@ -34,6 +35,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.w = w
 	c.r = r
 	c.store = nil
+	c.sw = statusWriter{}
 }
 
 // W returns the underlying ResponseWriter.
@@ -118,7 +120,12 @@ func (c *Context) limitedBody() io.ReadCloser {
 func (c *Context) JSON(status int, body any) error {
 	c.w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.w.WriteHeader(status)
-	return json.NewEncoder(c.w).Encode(body)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	_, err = c.w.Write(data)
+	return err
 }
 
 // String writes a plain-text response.
