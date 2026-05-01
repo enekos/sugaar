@@ -182,10 +182,6 @@ func (h *Hub) Publish(ev Event) int {
 		return 0
 	}
 	set := h.subs[ev.Topic]
-	subs := make([]*Subscription, 0, len(set))
-	for s := range set {
-		subs = append(subs, s)
-	}
 	var rb *replayBuffer
 	if h.replaySize > 0 {
 		rb = h.replays[ev.Topic]
@@ -197,14 +193,12 @@ func (h *Hub) Publish(ev Event) int {
 			h.replays[ev.Topic] = rb
 		}
 	}
-	h.mu.Unlock()
-
 	if rb != nil {
 		rb.push(ev)
 	}
 
 	delivered := 0
-	for _, s := range subs {
+	for s := range set {
 		if s.send(ev) {
 			delivered++
 		} else {
@@ -212,6 +206,7 @@ func (h *Hub) Publish(ev Event) int {
 			h.log.LogAttrs(context.Background(), slog.LevelWarn, "sugaar: event dropped (slow subscriber)", slog.String("topic", ev.Topic))
 		}
 	}
+	h.mu.Unlock()
 	return delivered
 }
 
