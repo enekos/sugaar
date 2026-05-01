@@ -168,8 +168,10 @@ func (a *App) rebuildChain() {
 func (a *App) Handle(pattern string, h HandlerFunc) {
 	a.Mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		var c *Context
-		if v, ok := reqCtxMap.Load(r); ok {
-			c = v.(*Context)
+		reqCtxMu.Lock()
+		c = reqCtxMap[r]
+		reqCtxMu.Unlock()
+		if c != nil {
 			c.w = w
 			c.r = r
 		} else {
@@ -191,7 +193,8 @@ func (a *App) Handle(pattern string, h HandlerFunc) {
 
 // reqCtxMap maps *http.Request to *Context for the duration of a request,
 // avoiding the two allocations from Request.WithContext + context.WithValue.
-var reqCtxMap sync.Map
+var reqCtxMu sync.Mutex
+var reqCtxMap map[*http.Request]*Context
 
 // GET / POST / PUT / DELETE / PATCH / HEAD / OPTIONS register a method-bound route.
 func (a *App) GET(path string, h HandlerFunc)     { a.Handle("GET "+path, h) }
@@ -209,9 +212,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := contextPool.Get().(*Context)
 	c.app = a
 	c.reset(w, r)
-	reqCtxMap.Store(r, c)
+	reqCtxMu.Lock()
+	if reqCtxMap == nil {
+		reqCtxMap = make(map[*http.Request]*Context)
+	}
+	reqCtxMap[r] = c
+	reqCtxMu.Unlock()
 	defer func() {
-		reqCtxMap.Delete(r)
+		reqCtxMu.Lock()
+		delete(reqCtxMap, r)
+		reqCtxMu.Unlock()
 		c.app = nil
 		c.reset(nil, nil)
 		contextPool.Put(c)

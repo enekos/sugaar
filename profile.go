@@ -54,8 +54,10 @@ func (a *App) pprofGate() func(http.HandlerFunc) http.Handler {
 func (a *App) adapt(h HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var c *Context
-		if v, ok := reqCtxMap.Load(r); ok {
-			c = v.(*Context)
+		reqCtxMu.Lock()
+		c = reqCtxMap[r]
+		reqCtxMu.Unlock()
+		if c != nil {
 			c.w = w
 			c.r = r
 		} else {
