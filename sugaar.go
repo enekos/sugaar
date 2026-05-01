@@ -118,10 +118,12 @@ type App struct {
 	Mux *http.ServeMux
 	Hub *Hub
 
-	opts Options
-	log  *slog.Logger
-	mws  []Middleware
-	grpc *GRPC
+	opts    Options
+	log     *slog.Logger
+	mws     []Middleware
+	grpc    *GRPC
+	base    HandlerFunc
+	chained HandlerFunc
 }
 
 // New constructs an App.
@@ -132,6 +134,10 @@ func New(opts Options) *App {
 		Hub:  NewHub(opts.Logger),
 		opts: opts,
 		log:  opts.Logger,
+	}
+	a.base = func(c *Context) error {
+		a.Mux.ServeHTTP(c.W(), c.R())
+		return nil
 	}
 	a.Use(recoverMiddleware(a.log), requestLogMiddleware(a.log))
 	if !opts.DisablePprof {
@@ -144,7 +150,14 @@ func New(opts Options) *App {
 }
 
 // Use appends middleware. Order matters: first added runs outermost.
-func (a *App) Use(mw ...Middleware) { a.mws = append(a.mws, mw...) }
+func (a *App) Use(mw ...Middleware) {
+	a.mws = append(a.mws, mw...)
+	a.rebuildChain()
+}
+
+func (a *App) rebuildChain() {
+	a.chained = chain(a.base, a.mws)
+}
 
 // Handle registers h for "METHOD /pattern". Pattern follows Go 1.22 syntax,
 // e.g. "GET /users/{id}" or "/static/" for prefix routes. App-level
@@ -203,11 +216,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		contextPool.Put(c)
 	}()
 
-	h := func(c *Context) error {
-		a.Mux.ServeHTTP(c.W(), c.R())
-		return nil
-	}
-	if err := chain(h, a.mws)(c); err != nil {
+	if err := a.chained(c); err != nil {
 		a.opts.ErrorHandler(c, err)
 	}
 }
