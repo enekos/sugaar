@@ -105,10 +105,18 @@ func (c *Context) BindQuery(dst any) error {
 }
 
 // BindForm parses application/x-www-form-urlencoded (or multipart) and
-// decodes into dst with `form:"..."` tags.
+// decodes into dst with `form:"..."` tags. The body is capped by
+// Options.MaxBodyBytes; overflow returns 413.
 func (c *Context) BindForm(dst any) error {
+	if c.r.Body != nil {
+		c.r.Body = c.limitedBody()
+	}
 	if err := c.r.ParseForm(); err != nil {
-		return err
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return httpErr(http.StatusRequestEntityTooLarge, "form body exceeds limit")
+		}
+		return BadRequest(err.Error()).WithCause(err)
 	}
 	return decodeValues(c.r.Form, dst, "form")
 }

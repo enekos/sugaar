@@ -2,12 +2,14 @@ package sugaar
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"sync"
+	"unsafe"
 )
 
 // HandlerFunc is sugaar's handler signature. Returning a non-nil error lets
@@ -24,6 +26,8 @@ type Context struct {
 	w   http.ResponseWriter
 	r   *http.Request
 	app *App
+	sw  statusWriter // embedded for reuse by requestLogMiddleware
+	reqID string
 
 	// store is a tiny per-request map; nil until first Set.
 	store map[string]any
@@ -34,6 +38,8 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.w = w
 	c.r = r
 	c.store = nil
+	c.sw = statusWriter{}
+	c.reqID = ""
 }
 
 // W returns the underlying ResponseWriter.
@@ -82,34 +88,60 @@ func (c *Context) Get(key string) (any, bool) {
 	return v, ok
 }
 
-// BindJSON decodes the request body as JSON into dst. The body is closed.
-// Returns an error suitable for returning from a HandlerFunc.
+// BindJSON decodes the request body as JSON into dst. The body is capped by
+// Options.MaxBodyBytes (default 1 MiB) and closed when the call returns.
+// On overflow it returns 413 Payload Too Large; on malformed JSON, 400.
 func (c *Context) BindJSON(dst any) error {
 	if c.r.Body == nil {
-		return errors.New("empty body")
+		return BadRequest("empty body")
 	}
-	defer c.r.Body.Close()
-	dec := json.NewDecoder(c.r.Body)
+	body := c.limitedBody()
+	defer body.Close()
+	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil && !errors.Is(err, io.EOF) {
-		return err
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return httpErr(http.StatusRequestEntityTooLarge, "request body exceeds limit")
+		}
+		return BadRequest(err.Error()).WithCause(err)
 	}
 	return nil
 }
 
+// limitedBody wraps r.Body in http.MaxBytesReader using the App's configured
+// body size cap. A negative cap disables the limit; a nil app falls back to
+// the original body so tests bypassing New still work.
+func (c *Context) limitedBody() io.ReadCloser {
+	if c.app == nil || c.app.opts.MaxBodyBytes < 0 {
+		return c.r.Body
+	}
+	return http.MaxBytesReader(c.w, c.r.Body, c.app.opts.MaxBodyBytes)
+}
+
+var (
+	jsonContentType = []string{"application/json; charset=utf-8"}
+	textContentType = []string{"text/plain; charset=utf-8"}
+)
+
 // JSON writes status and a JSON-encoded body. The Content-Type is set
 // automatically.
 func (c *Context) JSON(status int, body any) error {
-	c.w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.w.Header()["Content-Type"] = jsonContentType
 	c.w.WriteHeader(status)
-	return json.NewEncoder(c.w).Encode(body)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	_, err = c.w.Write(data)
+	return err
 }
 
 // String writes a plain-text response.
 func (c *Context) String(status int, s string) error {
-	c.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	c.w.Header()["Content-Type"] = textContentType
 	c.w.WriteHeader(status)
-	_, err := io.WriteString(c.w, s)
+	_, err := c.w.Write(strBytes(s))
 	return err
 }
 
@@ -117,6 +149,23 @@ func (c *Context) String(status int, s string) error {
 func (c *Context) Status(code int) error {
 	c.w.WriteHeader(code)
 	return nil
+}
+
+// RequestID returns the request's ID if RequestID middleware is installed.
+func (c *Context) RequestID() string { return c.reqID }
+
+// hexEncodeString encodes src as hex into a reused byte slice and returns a
+// string without allocating the intermediate byte slice on the heap.
+func hexEncodeString(src []byte) string {
+	dst := make([]byte, hex.EncodedLen(len(src)))
+	hex.Encode(dst, src)
+	return unsafe.String(&dst[0], len(dst))
+}
+
+// strBytes returns a byte slice backed by s without copying.
+// The caller must not modify the returned slice.
+func strBytes(s string) []byte {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 // contextPool keeps Context allocations off the hot path.
